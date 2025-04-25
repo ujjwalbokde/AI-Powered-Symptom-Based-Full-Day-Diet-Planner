@@ -1,31 +1,41 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import numpy as np
 import tensorflow as tf
-import joblib
-import io
+import pickle
+import json
 
-app = FastAPI()
+app = FastAPI(title="Disease Prediction API")
 
-# Load models
-keras_model = tf.keras.models.load_model("models/best_model.h5")
-joblib_model = joblib.load("models/model_joblib.pkl")
+# Load model and encoders
+model = tf.keras.models.load_model("model/disease_predictor_model.h5")
+with open("model/label_encoder.pkl", "rb") as f:
+    label_encoder = pickle.load(f)
+with open("model/symptom_list.json", "r") as f:
+    all_symptoms = json.load(f)
 
-class InputData(BaseModel):
-    features: list[float]
+class SymptomInput(BaseModel):
+    symptoms: list
 
 @app.get("/")
-def home():
-    return {"message": "Model API is live!"}
+def root():
+    return {"message": "Welcome to Disease Predictor API"}
 
-@app.post("/predict/keras")
-def predict_keras(data: InputData):
-    input_array = np.array([data.features])
-    prediction = keras_model.predict(input_array)
-    return {"keras_prediction": prediction.tolist()}
+@app.post("/predict")
+def predict_disease(input_data: SymptomInput):
+    try:
+        input_vector = [1 if symptom in input_data.symptoms else 0 for symptom in all_symptoms]
+        features = np.array(input_vector).reshape(1, -1)
 
-@app.post("/predict/joblib")
-def predict_joblib(data: InputData):
-    input_array = np.array([data.features])
-    prediction = joblib_model.predict(input_array)
-    return {"joblib_prediction": prediction.tolist()}
+        prediction = model.predict(features)
+        predicted_index = np.argmax(prediction, axis=1)[0]
+        predicted_disease = label_encoder.inverse_transform([predicted_index])[0]
+        confidence = float(np.max(prediction))
+
+        return {
+            "predicted_disease": predicted_disease,
+            "confidence": round(confidence, 4)
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
