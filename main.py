@@ -5,60 +5,53 @@ import tensorflow as tf
 import pickle
 import json
 
-app = FastAPI(title="Health Prediction API")
+app = FastAPI(title="Symptoms-Based Diet Recommendation API")
 
-# Load Disease Prediction Model and Encoders
+# Load Disease Prediction Model and its encoders
 disease_model = tf.keras.models.load_model("model/disease_predictor_model.h5")
 with open("model/label_encoder.pkl", "rb") as f:
     disease_label_encoder = pickle.load(f)
 with open("model/symptom_list.json", "r") as f:
     all_symptoms = json.load(f)
 
-# Load Diet Recommendation Model and Encoders
-diet_model = tf.keras.models.load_model("model/diet_recommendation_model.h5")
-with open("model/disease_encoder.pkl", "rb") as f:
-    disease_encoder = pickle.load(f)
-with open("model/gender_encoder.pkl", "rb") as f:
-    gender_encoder = pickle.load(f)
-with open("model/diet_encoder.pkl", "rb") as f:
-    diet_encoder = pickle.load(f)
-with open("model/scaler.pkl", "rb") as f:
-    scaler = pickle.load(f)
+# Load Diet Recommendation Model (NEW: uses only disease as input)
+diet_model = tf.keras.models.load_model("model/disease_to_diet_model.h5")
+with open("model/vectorizer.pkl", "rb") as f:
+    disease_vectorizer = pickle.load(f)
+with open("model/label_encoder_diet.pkl", "rb") as f:
+    diet_label_encoder = pickle.load(f)
 
-### ✅ Request Model
-class HealthInput(BaseModel):
+# Request Schema
+class InputData(BaseModel):
     symptoms: list
     age: int
     bmi: float
     gender: str
 
-### ✅ Root Endpoint
+# API root
 @app.get("/")
 def root():
-    return {"message": "Welcome to Health Prediction API"}
+    return {"message": "Welcome to the Symptoms-Based Diet Recommendation API"}
 
-### ✅ Combined Prediction Endpoint
-@app.post("/predict-health")
-def predict_health(input_data: HealthInput):
+# Main endpoint
+@app.post("/recommend-diet")
+def recommend_diet(input_data: InputData):
     try:
         # Disease Prediction
         input_vector = [1 if symptom in input_data.symptoms else 0 for symptom in all_symptoms]
-        disease_features = np.array(input_vector).reshape(1, -1)
+        disease_input = np.array(input_vector).reshape(1, -1)
 
-        disease_prediction = disease_model.predict(disease_features)
-        predicted_disease_index = np.argmax(disease_prediction, axis=1)[0]
+        disease_probs = disease_model.predict(disease_input)
+        predicted_disease_index = np.argmax(disease_probs)
         predicted_disease = disease_label_encoder.inverse_transform([predicted_disease_index])[0]
-        disease_confidence = float(np.max(disease_prediction))
+        disease_confidence = float(np.max(disease_probs))
 
-        # Diet Recommendation
-        encoded_disease = disease_encoder.transform([predicted_disease])[0]
-        encoded_gender = gender_encoder.transform([input_data.gender])[0]
-        scaled_features = scaler.transform([[encoded_disease, input_data.age, input_data.bmi, encoded_gender]])
-
-        diet_prediction = diet_model.predict(scaled_features)
-        predicted_diet_index = np.argmax(diet_prediction, axis=1)[0]
-        predicted_diet = diet_encoder.inverse_transform([predicted_diet_index])[0]
-        diet_confidence = float(np.max(diet_prediction))
+        # Diet Recommendation (NEW model: disease -> diet)
+        disease_vec = disease_vectorizer.transform([predicted_disease]).toarray()
+        diet_probs = diet_model.predict(disease_vec)
+        predicted_diet_index = np.argmax(diet_probs)
+        predicted_diet = diet_label_encoder.inverse_transform([predicted_diet_index])[0]
+        diet_confidence = float(np.max(diet_probs))
 
         return {
             "predicted_disease": {
@@ -68,10 +61,13 @@ def predict_health(input_data: HealthInput):
             "recommended_diet": {
                 "diet_type": predicted_diet,
                 "confidence": round(diet_confidence, 4)
+            },
+            "user_details": {
+                "age": input_data.age,
+                "bmi": input_data.bmi,
+                "gender": input_data.gender
             }
         }
 
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=f"Input Error: {str(ve)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
